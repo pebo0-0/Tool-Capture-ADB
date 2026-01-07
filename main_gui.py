@@ -13,23 +13,51 @@ ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 # ==========================================
-# PHẦN 1: ADB HELPER
+# PHẦN 1: ADB HELPER (ĐÃ SỬA LOGIC PORTABLE)
 # ==========================================
 class ADBHelper:
     def __init__(self, device_id):
         self.device_id = device_id
-        self.adb_path = "adb" 
+        # Tự động lấy đường dẫn ADB
+        self.adb_path = self._get_adb_executable()
+
+    @staticmethod
+    def _get_adb_executable():
+        """
+        Hàm nội bộ: Tìm file adb.exe nằm cùng thư mục code.
+        Nếu có -> trả về đường dẫn tuyệt đối.
+        Nếu không -> trả về 'adb' (dùng biến môi trường).
+        """
+        # Lấy đường dẫn thư mục hiện tại chứa file script
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Đường dẫn tới file adb trong folder 'adb'
+        local_adb = os.path.join(current_dir, "adb", "adb.exe")
+
+        if os.path.exists(local_adb):
+            return f'"{local_adb}"' # Thêm ngoặc kép để tránh lỗi khoảng trắng
+        return "adb"
 
     def capture_screen(self):
         """Chụp màn hình -> OpenCV Image"""
         try:
+            # Sửa lệnh cmd để dùng self.adb_path đã tìm được
+            cmd = f'{self.adb_path} -s {self.device_id} shell screencap -p'
+            
+            # Cấu hình để ẩn cửa sổ CMD đen xì khi chạy (chỉ có tác dụng trên Windows)
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
             pipe = subprocess.Popen(
-                f'{self.adb_path} -s {self.device_id} shell screencap -p',
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                shell=True
+                stderr=subprocess.PIPE, # Bắt thêm stderr để không hiện rác
+                shell=True,
+                startupinfo=startupinfo
             )
             image_bytes = pipe.stdout.read().replace(b'\r\n', b'\n')
+            
             if not image_bytes: return None
             
             return cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
@@ -40,7 +68,20 @@ class ADBHelper:
     @staticmethod
     def get_connected_devices():
         try:
-            process = subprocess.Popen("adb devices", shell=True, stdout=subprocess.PIPE)
+            # Lấy đường dẫn ADB
+            adb_cmd = ADBHelper._get_adb_executable()
+            
+            # Ẩn cửa sổ CMD
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            process = subprocess.Popen(
+                f"{adb_cmd} devices", 
+                shell=True, 
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                startupinfo=startupinfo
+            )
             output = process.stdout.read().decode('utf-8')
             devices = []
             for line in output.split('\n')[1:]:
@@ -254,16 +295,10 @@ class CaptureToolApp(ctk.CTk):
         # --- CẤU HÌNH CĂN GIỮA MÀN HÌNH ---
         window_width = 600
         window_height = 500
-
-        # Lấy kích thước màn hình
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
-
-        # Tính toán tọa độ x, y để căn giữa
         x_cordinate = int((screen_width / 2) - (window_width / 2))
         y_cordinate = int((screen_height / 2) - (window_height / 2))
-
-        # Áp dụng geometry
         self.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
         # ----------------------------------
 
