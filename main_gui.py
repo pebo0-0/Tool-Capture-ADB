@@ -50,39 +50,59 @@ class ADBHelper:
         except: return []
 
 # ==========================================
-# PHẦN 2: CỬA SỔ CẮT ẢNH (NÂNG CẤP)
+# PHẦN 2: CỬA SỔ CẮT ẢNH & LẤY TỌA ĐỘ
 # ==========================================
 class RegionSelectionDialog(ctk.CTkToplevel):
     def __init__(self, parent, cv2_image, device_id, adb_helper):
         super().__init__(parent)
-        self.title(f"Cắt Ảnh Mẫu - {device_id}")
-        self.geometry("1100x800")
-        self.attributes("-topmost", True)
-        self.focus_force()
-
+        self.title(f"Công Cụ Ảnh - {device_id}")
+        
         self.device_id = device_id
-        self.adb_helper = adb_helper # Lưu object adb để gọi chụp lại
+        self.adb_helper = adb_helper 
         self.cv2_image = None
         self.tk_image = None
         self.pil_image = None
+        self.is_picking_mode = False 
 
-        # --- TOOLBAR (Thanh công cụ bên trên) ---
+        # --- TÍNH TOÁN KÍCH THƯỚC CỬA SỔ TỰ ĐỘNG ---
+        img_h, img_w = cv2_image.shape[:2]
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+
+        toolbar_height = 60
+        target_w = img_w + 25 
+        target_h = img_h + toolbar_height + 25 
+
+        final_w = min(target_w, screen_w - 50)
+        final_h = min(target_h, screen_h - 80)
+
+        pos_x = (screen_w - final_w) // 2
+        pos_y = (screen_h - final_h) // 2
+
+        self.geometry(f"{final_w}x{final_h}+{pos_x}+{pos_y}")
+        self.attributes("-topmost", True)
+        self.focus_force()
+
+        # --- TOOLBAR ---
         self.toolbar = ctk.CTkFrame(self, height=50)
         self.toolbar.pack(side="top", fill="x", padx=5, pady=5)
 
-        # Nút Chụp Lại
-        self.btn_recapture = ctk.CTkButton(self.toolbar, text="🔄 Chụp Lại (Reset)", width=150, 
+        self.btn_recapture = ctk.CTkButton(self.toolbar, text="🔄 Chụp Lại", width=100, 
                                            fg_color="#F39C12", hover_color="#D35400",
                                            command=self.refresh_screenshot)
-        self.btn_recapture.pack(side="left", padx=10, pady=5)
+        self.btn_recapture.pack(side="left", padx=5, pady=5)
 
-        # Nút Lưu Toàn Màn Hình
-        self.btn_save_full = ctk.CTkButton(self.toolbar, text="💾 Lưu Full Màn Hình", width=150,
+        self.btn_save_full = ctk.CTkButton(self.toolbar, text="💾 Lưu Full", width=100,
                                            fg_color="#2ECC71", hover_color="#27AE60",
                                            command=self.save_full_screen)
-        self.btn_save_full.pack(side="left", padx=10, pady=5)
+        self.btn_save_full.pack(side="left", padx=5, pady=5)
 
-        self.lbl_status = ctk.CTkLabel(self.toolbar, text="Kéo chuột để cắt...", text_color="gray")
+        self.btn_pick_coord = ctk.CTkButton(self.toolbar, text="📍 Lấy Tọa Độ", width=120,
+                                            fg_color="#3498DB", hover_color="#2980B9",
+                                            command=self.toggle_pick_mode)
+        self.btn_pick_coord.pack(side="left", padx=5, pady=5)
+
+        self.lbl_status = ctk.CTkLabel(self.toolbar, text=f"Ảnh: {img_w}x{img_h}", text_color="white", font=("Arial", 14))
         self.lbl_status.pack(side="right", padx=20)
 
         # --- KHUNG ẢNH CHÍNH ---
@@ -107,6 +127,7 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         self.rect_id = None
         self.start_x = 0
         self.start_y = 0
+        self.marker_id = None 
 
         # Bind chuột
         self.canvas.bind("<ButtonPress-1>", self.on_button_press)
@@ -116,8 +137,20 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         # Load ảnh lần đầu
         self.update_image_display(cv2_image)
 
+    def toggle_pick_mode(self):
+        self.is_picking_mode = not self.is_picking_mode
+        if self.is_picking_mode:
+            self.btn_pick_coord.configure(text="✂️ Quay lại Cắt", fg_color="#E74C3C", hover_color="#C0392B")
+            self.lbl_status.configure(text="[MODE TỌA ĐỘ] Click lấy X, Y", text_color="#3498DB")
+            self.canvas.configure(cursor="tcross")
+            if self.rect_id: self.canvas.delete(self.rect_id)
+        else:
+            self.btn_pick_coord.configure(text="📍 Lấy Tọa Độ", fg_color="#3498DB", hover_color="#2980B9")
+            self.lbl_status.configure(text="[MODE CẮT] Kéo chuột cắt ảnh", text_color="white")
+            self.canvas.configure(cursor="cross")
+            if self.marker_id: self.canvas.delete(self.marker_id)
+
     def update_image_display(self, cv2_img):
-        """Hàm cập nhật ảnh lên Canvas"""
         if cv2_img is None: return
         self.cv2_image = cv2_img
         
@@ -125,15 +158,13 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         self.pil_image = Image.fromarray(rgb_image)
         self.tk_image = ImageTk.PhotoImage(self.pil_image)
 
-        # Reset Canvas
         self.canvas.delete("all")
         self.canvas.config(scrollregion=(0, 0, self.pil_image.width, self.pil_image.height))
         self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
         
-        self.lbl_status.configure(text=f"Kích thước: {self.pil_image.width}x{self.pil_image.height}")
+        self.lbl_status.configure(text=f"Ảnh: {self.pil_image.width}x{self.pil_image.height}")
 
     def refresh_screenshot(self):
-        """Chụp lại màn hình mới từ ADB"""
         self.lbl_status.configure(text="Đang chụp lại...", text_color="yellow")
         self.btn_recapture.configure(state="disabled")
         
@@ -149,69 +180,93 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         threading.Thread(target=task, daemon=True).start()
 
     def save_full_screen(self):
-        """Lưu toàn bộ ảnh mà không cần cắt"""
         if self.cv2_image is None: return
-        
         h, w = self.cv2_image.shape[:2]
         self.ask_save(0, 0, w, h)
 
     def on_button_press(self, event):
-        self.start_x = self.canvas.canvasx(event.x)
-        self.start_y = self.canvas.canvasy(event.y)
+        canvas_x = self.canvas.canvasx(event.x)
+        canvas_y = self.canvas.canvasy(event.y)
+
+        if self.is_picking_mode:
+            if self.marker_id: self.canvas.delete(self.marker_id)
+            r = 3
+            self.marker_id = self.canvas.create_oval(canvas_x - r, canvas_y - r, canvas_x + r, canvas_y + r, fill="red", outline="yellow")
+            coord_text = f"{int(canvas_x)}, {int(canvas_y)}"
+            self.lbl_status.configure(text=f"Đã copy: {coord_text}", text_color="#F1C40F")
+            self.clipboard_clear()
+            self.clipboard_append(coord_text)
+            self.update() 
+            return
+
+        self.start_x = canvas_x
+        self.start_y = canvas_y
         if self.rect_id: self.canvas.delete(self.rect_id)
         self.rect_id = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="#00FF00", width=2)
 
     def on_move_press(self, event):
+        if self.is_picking_mode: return
         cur_x = self.canvas.canvasx(event.x)
         cur_y = self.canvas.canvasy(event.y)
         self.canvas.coords(self.rect_id, self.start_x, self.start_y, cur_x, cur_y)
 
     def on_button_release(self, event):
+        if self.is_picking_mode: return
         end_x = self.canvas.canvasx(event.x)
         end_y = self.canvas.canvasy(event.y)
         x1, x2 = sorted([int(self.start_x), int(end_x)])
         y1, y2 = sorted([int(self.start_y), int(end_y)])
-
         if (x2 - x1) < 5 or (y2 - y1) < 5: return 
         self.ask_save(x1, y1, x2, y2)
 
     def ask_save(self, x1, y1, x2, y2):
-        """Hiện hộp thoại lưu ảnh"""
         dialog = ctk.CTkInputDialog(text="Đặt tên cho ảnh mẫu:", title="Lưu Ảnh")
         filename = dialog.get_input()
-        
         if filename:
             self.save_image(x1, y1, x2, y2, filename)
         else:
-            if self.rect_id: self.canvas.delete(self.rect_id) # Hủy chọn nếu cancel
+            if self.rect_id: self.canvas.delete(self.rect_id)
 
     def save_image(self, x1, y1, x2, y2, filename):
         h, w = self.cv2_image.shape[:2]
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(w, x2); y2 = min(h, y2)
-
         cropped_img = self.cv2_image[y1:y2, x1:x2]
         
         save_dir = "img_data"
         if not os.path.exists(save_dir): os.makedirs(save_dir)
-        
         if not filename.endswith(".png"): filename += ".png"
         full_path = os.path.join(save_dir, filename)
         
         cv2.imwrite(full_path, cropped_img)
         print(f"✅ Đã lưu: {full_path}")
         self.lbl_status.configure(text=f"Đã lưu: {filename}", text_color="#2ECC71")
-        
-        if self.rect_id: self.canvas.delete(self.rect_id) # Xóa khung vẽ để cắt tiếp
+        if self.rect_id: self.canvas.delete(self.rect_id)
 
 # ==========================================
-# PHẦN 3: APP CHÍNH
+# PHẦN 3: APP CHÍNH (CĂN GIỮA MÀN HÌNH)
 # ==========================================
 class CaptureToolApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Công Cụ Lấy Mẫu ADB Pro")
-        self.geometry("600x500")
+
+        # --- CẤU HÌNH CĂN GIỮA MÀN HÌNH ---
+        window_width = 600
+        window_height = 500
+
+        # Lấy kích thước màn hình
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+
+        # Tính toán tọa độ x, y để căn giữa
+        x_cordinate = int((screen_width / 2) - (window_width / 2))
+        y_cordinate = int((screen_height / 2) - (window_height / 2))
+
+        # Áp dụng geometry
+        self.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
+        # ----------------------------------
+
         self.device_helpers = {} 
 
         self.grid_columnconfigure(0, weight=1)
@@ -272,7 +327,6 @@ class CaptureToolApp(ctk.CTk):
         if adb:
             screen_img = adb.capture_screen()
             if screen_img is not None:
-                # Truyền cả object adb vào window để nó dùng lại
                 self.after(0, lambda: RegionSelectionDialog(self, screen_img, device_id, adb))
                 self.after(0, lambda: self.lbl_status.configure(text="Đã mở cửa sổ cắt."))
             else:
