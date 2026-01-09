@@ -1,97 +1,20 @@
 import customtkinter as ctk
 import threading
-import subprocess
 import os
 import time
 import cv2
-import numpy as np
 import tkinter as tk
 from PIL import Image, ImageTk
+
+# Import class ADBHelper từ file adb_manager.py
+from adb_manager import ADBHelper 
 
 # Cấu hình giao diện
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
 # ==========================================
-# PHẦN 1: ADB HELPER (ĐÃ SỬA LOGIC PORTABLE)
-# ==========================================
-class ADBHelper:
-    def __init__(self, device_id):
-        self.device_id = device_id
-        # Tự động lấy đường dẫn ADB
-        self.adb_path = self._get_adb_executable()
-
-    @staticmethod
-    def _get_adb_executable():
-        """
-        Hàm nội bộ: Tìm file adb.exe nằm cùng thư mục code.
-        Nếu có -> trả về đường dẫn tuyệt đối.
-        Nếu không -> trả về 'adb' (dùng biến môi trường).
-        """
-        # Lấy đường dẫn thư mục hiện tại chứa file script
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Đường dẫn tới file adb trong folder 'adb'
-        local_adb = os.path.join(current_dir, "adb", "adb.exe")
-
-        if os.path.exists(local_adb):
-            return f'"{local_adb}"' # Thêm ngoặc kép để tránh lỗi khoảng trắng
-        return "adb"
-
-    def capture_screen(self):
-        """Chụp màn hình -> OpenCV Image"""
-        try:
-            # Sửa lệnh cmd để dùng self.adb_path đã tìm được
-            cmd = f'{self.adb_path} -s {self.device_id} shell screencap -p'
-            
-            # Cấu hình để ẩn cửa sổ CMD đen xì khi chạy (chỉ có tác dụng trên Windows)
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-            pipe = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, # Bắt thêm stderr để không hiện rác
-                shell=True,
-                startupinfo=startupinfo
-            )
-            image_bytes = pipe.stdout.read().replace(b'\r\n', b'\n')
-            
-            if not image_bytes: return None
-            
-            return cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
-        except Exception as e:
-            print(f"Error capture: {e}")
-            return None
-
-    @staticmethod
-    def get_connected_devices():
-        try:
-            # Lấy đường dẫn ADB
-            adb_cmd = ADBHelper._get_adb_executable()
-            
-            # Ẩn cửa sổ CMD
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            
-            process = subprocess.Popen(
-                f"{adb_cmd} devices", 
-                shell=True, 
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                startupinfo=startupinfo
-            )
-            output = process.stdout.read().decode('utf-8')
-            devices = []
-            for line in output.split('\n')[1:]:
-                if '\tdevice' in line:
-                    devices.append(line.split('\t')[0])
-            return devices
-        except: return []
-
-# ==========================================
-# PHẦN 2: CỬA SỔ CẮT ẢNH & LẤY TỌA ĐỘ
+# CLASS CỬA SỔ CẮT ẢNH & LẤY TỌA ĐỘ (CÓ ZOOM)
 # ==========================================
 class RegionSelectionDialog(ctk.CTkToplevel):
     def __init__(self, parent, cv2_image, device_id, adb_helper):
@@ -100,26 +23,28 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         
         self.device_id = device_id
         self.adb_helper = adb_helper 
-        self.cv2_image = None
+        
+        # Dữ liệu ảnh gốc
+        self.cv2_image = cv2_image
+        rgb_image = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2RGB)
+        self.pil_image_original = Image.fromarray(rgb_image) # Giữ ảnh gốc để resize
+        
         self.tk_image = None
-        self.pil_image = None
         self.is_picking_mode = False 
-
-        # --- TÍNH TOÁN KÍCH THƯỚC CỬA SỔ TỰ ĐỘNG ---
+        
+        # --- BIẾN ZOOM ---
+        self.scale = 1.0
+        
+        # --- TÍNH TOÁN KÍCH THƯỚC CỬA SỔ ---
         img_h, img_w = cv2_image.shape[:2]
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
-
-        toolbar_height = 60
-        target_w = img_w + 25 
-        target_h = img_h + toolbar_height + 25 
-
-        final_w = min(target_w, screen_w - 50)
-        final_h = min(target_h, screen_h - 80)
-
+        
+        final_w = min(img_w + 50, screen_w - 50)
+        final_h = min(img_h + 150, screen_h - 100)
         pos_x = (screen_w - final_w) // 2
         pos_y = (screen_h - final_h) // 2
-
+        
         self.geometry(f"{final_w}x{final_h}+{pos_x}+{pos_y}")
         self.attributes("-topmost", True)
         self.focus_force()
@@ -128,23 +53,34 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         self.toolbar = ctk.CTkFrame(self, height=50)
         self.toolbar.pack(side="top", fill="x", padx=5, pady=5)
 
-        self.btn_recapture = ctk.CTkButton(self.toolbar, text="🔄 Chụp Lại", width=100, 
+        self.btn_recapture = ctk.CTkButton(self.toolbar, text="🔄 Chụp Lại", width=80, 
                                            fg_color="#F39C12", hover_color="#D35400",
                                            command=self.refresh_screenshot)
-        self.btn_recapture.pack(side="left", padx=5, pady=5)
+        self.btn_recapture.pack(side="left", padx=5)
 
-        self.btn_save_full = ctk.CTkButton(self.toolbar, text="💾 Lưu Full", width=100,
+        self.btn_save_full = ctk.CTkButton(self.toolbar, text="💾 Lưu Full", width=80,
                                            fg_color="#2ECC71", hover_color="#27AE60",
                                            command=self.save_full_screen)
-        self.btn_save_full.pack(side="left", padx=5, pady=5)
+        self.btn_save_full.pack(side="left", padx=5)
 
-        self.btn_pick_coord = ctk.CTkButton(self.toolbar, text="📍 Lấy Tọa Độ", width=120,
+        self.btn_pick_coord = ctk.CTkButton(self.toolbar, text="📍 Lấy Tọa Độ", width=100,
                                             fg_color="#3498DB", hover_color="#2980B9",
                                             command=self.toggle_pick_mode)
-        self.btn_pick_coord.pack(side="left", padx=5, pady=5)
+        self.btn_pick_coord.pack(side="left", padx=5)
 
-        self.lbl_status = ctk.CTkLabel(self.toolbar, text=f"Ảnh: {img_w}x{img_h}", text_color="white", font=("Arial", 14))
-        self.lbl_status.pack(side="right", padx=20)
+        # Nút Zoom thủ công (cho ai không thích lăn chuột)
+        ctk.CTkLabel(self.toolbar, text="|").pack(side="left", padx=5)
+        self.btn_zoom_out = ctk.CTkButton(self.toolbar, text="-", width=30, command=self.zoom_out)
+        self.btn_zoom_out.pack(side="left", padx=2)
+        
+        self.lbl_zoom = ctk.CTkLabel(self.toolbar, text="100%", width=40)
+        self.lbl_zoom.pack(side="left", padx=2)
+        
+        self.btn_zoom_in = ctk.CTkButton(self.toolbar, text="+", width=30, command=self.zoom_in)
+        self.btn_zoom_in.pack(side="left", padx=2)
+
+        self.lbl_status = ctk.CTkLabel(self.toolbar, text=f"{img_w}x{img_h}", text_color="gray")
+        self.lbl_status.pack(side="right", padx=10)
 
         # --- KHUNG ẢNH CHÍNH ---
         self.main_frame = ctk.CTkFrame(self)
@@ -164,60 +100,92 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         self.v_scroll.configure(command=self.canvas.yview)
         self.h_scroll.configure(command=self.canvas.xview)
 
+        # Bind chuột
+        self.canvas.bind("<ButtonPress-1>", self.on_button_press)
+        self.canvas.bind("<B1-Motion>", self.on_move_press)
+        self.canvas.bind("<ButtonRelease-1>", self.on_button_release)
+        
+        # Bind Lăn chuột để Zoom (Windows)
+        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
+        # Linux dùng Button-4 và Button-5 (nếu cần)
+        self.canvas.bind("<Button-4>", lambda e: self.zoom_in())
+        self.canvas.bind("<Button-5>", lambda e: self.zoom_out())
+
         # Variables vẽ
         self.rect_id = None
         self.start_x = 0
         self.start_y = 0
         self.marker_id = None 
 
-        # Bind chuột
-        self.canvas.bind("<ButtonPress-1>", self.on_button_press)
-        self.canvas.bind("<B1-Motion>", self.on_move_press)
-        self.canvas.bind("<ButtonRelease-1>", self.on_button_release)
+        # Hiển thị ảnh lần đầu
+        self.update_image_display()
 
-        # Load ảnh lần đầu
-        self.update_image_display(cv2_image)
+    # --- CÁC HÀM ZOOM ---
+    def zoom_in(self):
+        self.scale *= 1.1 # Tăng 10%
+        self.update_image_display()
 
+    def zoom_out(self):
+        self.scale /= 1.1 # Giảm 10%
+        self.update_image_display()
+        
+    def on_mouse_wheel(self, event):
+        # Windows: event.delta dương là lăn lên, âm là lăn xuống
+        if event.delta > 0:
+            self.zoom_in()
+        else:
+            self.zoom_out()
+
+    def update_image_display(self):
+        """Vẽ lại ảnh dựa trên tỉ lệ scale hiện tại"""
+        if self.pil_image_original is None: return
+
+        # Tính kích thước mới
+        new_w = int(self.pil_image_original.width * self.scale)
+        new_h = int(self.pil_image_original.height * self.scale)
+        
+        # Resize ảnh (Dùng NEAREST để giữ pixel sắc nét khi zoom to)
+        resized_pil = self.pil_image_original.resize((new_w, new_h), Image.NEAREST)
+        self.tk_image = ImageTk.PhotoImage(resized_pil)
+
+        # Xóa canvas và vẽ lại
+        self.canvas.delete("all")
+        self.canvas.config(scrollregion=(0, 0, new_w, new_h))
+        self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
+        
+        # Cập nhật Label Zoom
+        self.lbl_zoom.configure(text=f"{int(self.scale * 100)}%")
+        
+        # Reset các hình vẽ cũ vì tọa độ đã lệch
+        self.rect_id = None
+        self.marker_id = None
+
+    # --- CÁC LOGIC CŨ (ĐÃ ĐƯỢC CHỈNH SỬA TỌA ĐỘ) ---
     def toggle_pick_mode(self):
         self.is_picking_mode = not self.is_picking_mode
         if self.is_picking_mode:
             self.btn_pick_coord.configure(text="✂️ Quay lại Cắt", fg_color="#E74C3C", hover_color="#C0392B")
-            self.lbl_status.configure(text="[MODE TỌA ĐỘ] Click lấy X, Y", text_color="#3498DB")
             self.canvas.configure(cursor="tcross")
             if self.rect_id: self.canvas.delete(self.rect_id)
         else:
             self.btn_pick_coord.configure(text="📍 Lấy Tọa Độ", fg_color="#3498DB", hover_color="#2980B9")
-            self.lbl_status.configure(text="[MODE CẮT] Kéo chuột cắt ảnh", text_color="white")
             self.canvas.configure(cursor="cross")
             if self.marker_id: self.canvas.delete(self.marker_id)
 
-    def update_image_display(self, cv2_img):
-        if cv2_img is None: return
-        self.cv2_image = cv2_img
-        
-        rgb_image = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB)
-        self.pil_image = Image.fromarray(rgb_image)
-        self.tk_image = ImageTk.PhotoImage(self.pil_image)
-
-        self.canvas.delete("all")
-        self.canvas.config(scrollregion=(0, 0, self.pil_image.width, self.pil_image.height))
-        self.canvas.create_image(0, 0, image=self.tk_image, anchor="nw")
-        
-        self.lbl_status.configure(text=f"Ảnh: {self.pil_image.width}x{self.pil_image.height}")
-
     def refresh_screenshot(self):
-        self.lbl_status.configure(text="Đang chụp lại...", text_color="yellow")
+        self.lbl_status.configure(text="Đang chụp...", text_color="yellow")
         self.btn_recapture.configure(state="disabled")
-        
         def task():
             new_img = self.adb_helper.capture_screen()
             if new_img is not None:
-                self.after(0, lambda: self.update_image_display(new_img))
-                self.after(0, lambda: self.lbl_status.configure(text="Đã cập nhật ảnh mới!", text_color="green"))
+                self.cv2_image = new_img
+                rgb_image = cv2.cvtColor(new_img, cv2.COLOR_BGR2RGB)
+                self.pil_image_original = Image.fromarray(rgb_image) # Cập nhật ảnh gốc
+                self.after(0, lambda: self.update_image_display()) # Vẽ lại
+                self.after(0, lambda: self.lbl_status.configure(text="Đã cập nhật!", text_color="green"))
             else:
-                self.after(0, lambda: self.lbl_status.configure(text="Lỗi chụp ảnh!", text_color="red"))
+                self.after(0, lambda: self.lbl_status.configure(text="Lỗi chụp!", text_color="red"))
             self.after(0, lambda: self.btn_recapture.configure(state="normal"))
-
         threading.Thread(target=task, daemon=True).start()
 
     def save_full_screen(self):
@@ -226,14 +194,20 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         self.ask_save(0, 0, w, h)
 
     def on_button_press(self, event):
+        # Lấy tọa độ trên Canvas (đã bị zoom)
         canvas_x = self.canvas.canvasx(event.x)
         canvas_y = self.canvas.canvasy(event.y)
 
+        # TÍNH TOÁN TỌA ĐỘ THỰC (Chia cho scale)
+        real_x = int(canvas_x / self.scale)
+        real_y = int(canvas_y / self.scale)
+
         if self.is_picking_mode:
             if self.marker_id: self.canvas.delete(self.marker_id)
-            r = 3
+            r = 3 * self.scale # Bán kính điểm đỏ cũng to theo zoom cho dễ nhìn
             self.marker_id = self.canvas.create_oval(canvas_x - r, canvas_y - r, canvas_x + r, canvas_y + r, fill="red", outline="yellow")
-            coord_text = f"{int(canvas_x)}, {int(canvas_y)}"
+            
+            coord_text = f"{real_x}, {real_y}"
             self.lbl_status.configure(text=f"Đã copy: {coord_text}", text_color="#F1C40F")
             self.clipboard_clear()
             self.clipboard_append(coord_text)
@@ -255,10 +229,21 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         if self.is_picking_mode: return
         end_x = self.canvas.canvasx(event.x)
         end_y = self.canvas.canvasy(event.y)
-        x1, x2 = sorted([int(self.start_x), int(end_x)])
-        y1, y2 = sorted([int(self.start_y), int(end_y)])
-        if (x2 - x1) < 5 or (y2 - y1) < 5: return 
-        self.ask_save(x1, y1, x2, y2)
+        
+        # Tọa độ trên Canvas
+        c_x1, c_x2 = sorted([self.start_x, end_x])
+        c_y1, c_y2 = sorted([self.start_y, end_y])
+        
+        # Chuyển đổi về tọa độ thực tế của ảnh (Chia cho Scale)
+        real_x1 = int(c_x1 / self.scale)
+        real_x2 = int(c_x2 / self.scale)
+        real_y1 = int(c_y1 / self.scale)
+        real_y2 = int(c_y2 / self.scale)
+
+        # Kiểm tra kích thước (tính theo ảnh thực)
+        if (real_x2 - real_x1) < 2 or (real_y2 - real_y1) < 2: return 
+        
+        self.ask_save(real_x1, real_y1, real_x2, real_y2)
 
     def ask_save(self, x1, y1, x2, y2):
         dialog = ctk.CTkInputDialog(text="Đặt tên cho ảnh mẫu:", title="Lưu Ảnh")
@@ -270,8 +255,11 @@ class RegionSelectionDialog(ctk.CTkToplevel):
 
     def save_image(self, x1, y1, x2, y2, filename):
         h, w = self.cv2_image.shape[:2]
+        # Giới hạn trong ảnh gốc
         x1 = max(0, x1); y1 = max(0, y1)
         x2 = min(w, x2); y2 = min(h, y2)
+        
+        # Cắt ảnh từ ảnh GỐC (self.cv2_image) chứ không phải ảnh đã zoom
         cropped_img = self.cv2_image[y1:y2, x1:x2]
         
         save_dir = "img_data"
@@ -285,32 +273,25 @@ class RegionSelectionDialog(ctk.CTkToplevel):
         if self.rect_id: self.canvas.delete(self.rect_id)
 
 # ==========================================
-# PHẦN 3: APP CHÍNH (CĂN GIỮA MÀN HÌNH)
+# CLASS APP CHÍNH
 # ==========================================
 class CaptureToolApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Công Cụ Lấy Mẫu ADB Pro")
+        self.title("Công Cụ Lấy Mẫu ADB Pro (Zoom)")
 
-        # --- CẤU HÌNH CĂN GIỮA MÀN HÌNH ---
-        window_width = 600
-        window_height = 500
-        screen_width = self.winfo_screenwidth()
-        screen_height = self.winfo_screenheight()
-        x_cordinate = int((screen_width / 2) - (window_width / 2))
-        y_cordinate = int((screen_height / 2) - (window_height / 2))
-        self.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
-        # ----------------------------------
+        # Căn giữa màn hình
+        w, h = 600, 500
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
 
         self.device_helpers = {} 
-
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
 
         # Header
         self.header_frame = ctk.CTkFrame(self)
         self.header_frame.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
-        
         self.btn_scan = ctk.CTkButton(self.header_frame, text="🔄 Quét Thiết Bị", command=self.scan_devices)
         self.btn_scan.pack(side="left", padx=10, pady=10)
         self.lbl_status = ctk.CTkLabel(self.header_frame, text="Sẵn sàng")
@@ -347,9 +328,7 @@ class CaptureToolApp(ctk.CTk):
     def add_device_row(self, device_id):
         row = ctk.CTkFrame(self.scroll_frame)
         row.pack(fill="x", pady=5)
-        
         ctk.CTkLabel(row, text=f"📱 {device_id}", width=200, anchor="w", font=("Arial", 14, "bold")).pack(side="left", padx=15, pady=10)
-        
         ctk.CTkButton(row, text="📸 Mở Công Cụ Cắt", width=150, fg_color="#E67E22", hover_color="#D35400",
                       command=lambda d=device_id: self.start_capture_process(d)).pack(side="right", padx=15, pady=10)
 
