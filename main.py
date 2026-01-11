@@ -2,7 +2,7 @@ import customtkinter as ctk
 import threading
 import os
 from adb_manager import ADBHelper
-from gui import RegionSelectionDialog  # <-- Import từ file gui.py
+from gui import RegionSelectionDialog  # <-- Import class từ file gui.py
 
 # Cấu hình giao diện
 ctk.set_appearance_mode("Dark")
@@ -11,7 +11,7 @@ ctk.set_default_color_theme("blue")
 class CaptureToolApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Công Cụ Lấy Mẫu ADB Pro (Zoom)")
+        self.title("Công Cụ Lấy Mẫu ADB Pro (Zoom & ROI)")
 
         # Căn giữa màn hình
         w, h = 600, 500
